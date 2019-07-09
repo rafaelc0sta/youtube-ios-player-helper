@@ -392,24 +392,10 @@ NSString static *const kYTPlayerSyndicationRegexPattern = @"^https://tpc.googles
   return levels;
 }
 
-- (BOOL)webView:(UIWebView *)webView
-    shouldStartLoadWithRequest:(NSURLRequest *)request
-                navigationType:(UIWebViewNavigationType)navigationType {
-  if ([request.URL.host isEqual: self.originURL.host]) {
-    return YES;
-  } else if ([request.URL.scheme isEqual:@"ytplayer"]) {
-    [self notifyDelegateOfYouTubeCallbackUrl:request.URL];
-    return NO;
-  } else if ([request.URL.scheme isEqual: @"http"] || [request.URL.scheme isEqual:@"https"]) {
-    return [self handleHttpNavigationToUrl:request.URL];
-  }
-  return YES;
-}
-
-- (void)webView:(UIWebView *)webView didFailLoadWithError:(NSError *)error {
-  if (self.initialLoadingView) {
-    [self.initialLoadingView removeFromSuperview];
-  }
+- (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+    if (self.initialLoadingView) {
+        [self.initialLoadingView removeFromSuperview];
+    }
 }
 
 /**
@@ -521,7 +507,7 @@ NSString static *const kYTPlayerSyndicationRegexPattern = @"^https://tpc.googles
 /**
  * Private method to handle "navigation" to a callback URL of the format
  * ytplayer://action?data=someData
- * This is how the UIWebView communicates with the containing Objective-C code.
+ * This is how the WKWebView communicates with the containing Objective-C code.
  * Side effects of this method are that it calls methods on this class's delegate.
  *
  * @param url A URL of the format ytplayer://action?data=value.
@@ -602,7 +588,7 @@ NSString static *const kYTPlayerSyndicationRegexPattern = @"^https://tpc.googles
 - (BOOL)handleHttpNavigationToUrl:(NSURL *) url {
   // Usually this means the user has clicked on the YouTube logo or an error message in the
   // player. Most URLs should open in the browser. The only http(s) URL that should open in this
-  // UIWebView is the URL for the embed, which is of the format:
+  // WKWebView is the URL for the embed, which is of the format:
   //     http(s)://www.youtube.com/embed/[VIDEO ID]?[PARAMETERS]
   NSError *error = NULL;
   NSRegularExpression *ytRegex =
@@ -745,9 +731,7 @@ NSString static *const kYTPlayerSyndicationRegexPattern = @"^https://tpc.googles
 
   NSString *embedHTML = [NSString stringWithFormat:embedHTMLTemplate, playerVarsJsonString];
   [self.webView loadHTMLString:embedHTML baseURL: self.originURL];
-  [self.webView setDelegate:self];
-  self.webView.allowsInlineMediaPlayback = YES;
-  self.webView.mediaPlaybackRequiresUserAction = NO;
+  [self.webView setNavigationDelegate:self];
   
   if ([self.delegate respondsToSelector:@selector(playerViewPreferredInitialLoadingView:)]) {
     UIView *initialLoadingView = [self.delegate playerViewPreferredInitialLoadingView:self];
@@ -831,7 +815,26 @@ NSString static *const kYTPlayerSyndicationRegexPattern = @"^https://tpc.googles
  * @return JavaScript response from evaluating code.
  */
 - (NSString *)stringFromEvaluatingJavaScript:(NSString *)jsToExecute {
-  return [self.webView stringByEvaluatingJavaScriptFromString:jsToExecute];
+    __block NSString *resultString = nil;
+    __block BOOL finished = NO;
+    
+    [self.webView evaluateJavaScript:jsToExecute completionHandler:^(id _Nullable result, NSError * _Nullable error) {
+        if (error == nil) {
+            if (result != nil) {
+                resultString = [NSString stringWithFormat:@"%@", result];
+            }
+        } else {
+            NSLog(@"evaluateJavaScript error : %@", error.localizedDescription);
+        }
+        finished = YES;
+    }];
+    
+    while (!finished)
+    {
+        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate distantFuture]];
+    }
+    
+    return resultString;
 }
 
 /**
@@ -846,15 +849,22 @@ NSString static *const kYTPlayerSyndicationRegexPattern = @"^https://tpc.googles
 
 #pragma mark - Exposed for Testing
 
-- (void)setWebView:(UIWebView *)webView {
+- (void)setWebView:(WKWebView *)webView {
   _webView = webView;
 }
 
-- (UIWebView *)createNewWebView {
-    UIWebView *webView = [[UIWebView alloc] initWithFrame:self.bounds];
+- (WKWebView *)createNewWebView {
+    
+    WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
+    configuration.allowsInlineMediaPlayback = TRUE;
+    configuration.mediaTypesRequiringUserActionForPlayback = WKAudiovisualMediaTypeNone;
+    
+    WKWebView *webView = [[WKWebView alloc] initWithFrame:self.bounds configuration:configuration];
     webView.autoresizingMask = (UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight);
     webView.scrollView.scrollEnabled = NO;
     webView.scrollView.bounces = NO;
+    
+    
     
     if ([self.delegate respondsToSelector:@selector(playerViewPreferredWebViewBackgroundColor:)]) {
         webView.backgroundColor = [self.delegate playerViewPreferredWebViewBackgroundColor:self];
